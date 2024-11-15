@@ -1,4 +1,4 @@
-%% Transfer Learning Using Pretrained Complex YOLO v4 Network
+% % % % % % % % % % % % %% Transfer Learning Using Pretrained Complex YOLO v4 Network
 % The following code demonstrates how to perform transfer learning using
 % the pretrained Complex YOLO v4 network for object detection. This script
 % uses the "configureYOLOv4" function to create a custom Complex YOLO v4
@@ -13,29 +13,49 @@ addpath('src');
 % *complex-yolov4-pandaset*
 % *tiny-complex-yolov4-pandaset*
 % Set the modelName from the above ones to download that pretrained model.
-modelName = 'tiny-complex-yolov4-pandaset';
+modelName = 'complex-yolov4-pandaset';
+% modelName = 'tiny-complex-yolov4-pandaset';
 model = helper.downloadPretrainedYOLOv4(modelName);
-net = model.net;
+
+loadedData = load('/home/isc/ISC/matlab_models/Lidar-object-detection-using-complex-yolov4/models/trainedModel_epoch_14.mat');
+
+% 
+% net = loadedData.net; we can load 
+
+net = model.net;   % loaded from base yolo network 
 
 %% Load Data
 % Create a datastore for loading the BEV images.
-imageFileLocation = fullfile(tempdir,'Pandaset','BEVImages');
+% imageFileLocation = fullfile(tempdir,'Pandaset','BEVImages');
+imageFileLocation = "/home/isc/ISC/matlab_models/Lidar-object-detection-using-complex-yolov4/Output_Folder/BEVImages/";
 imds = imageDatastore(imageFileLocation);
 
 % Create a datastore for loading the ground truth bounding boxes.
-boxLabelLocation = fullfile(tempdir,'Pandaset','Cuboids','BEVGroundTruthLabels.mat');
+% boxLabelLocation = fullfile(tempdir,'Pandaset','Cuboids','BEVGroundTruthLabels.mat');
+boxLabelLocation = fullfile("/home/isc/ISC/matlab_models/Lidar-object-detection-using-complex-yolov4/Output_Folder/Cuboids/",'BEVGroundTruthLabels.mat');
 load(boxLabelLocation,'processedLabels');
+
+%% this code block removes the pedestrian data and then in the original table we will only have car data. For remving
+% 'processedLabels' is the name of the table
+processedLabels.Pedestrain = cell(height(processedLabels), 1);
+
+% Display the updated table to verify
+disp(processedLabels);
+
+%%
 bds = boxLabelDatastore(processedLabels);
 
 % Remove data with zero labels from the training data.
 [imds,bds] = helper.removeEmptyData(imds,bds);
+%%
+
 
 % Split the data set into a training set for training the network, and a test 
 % set for evaluating the network. Use 60% of the data for training set and the 
-% rest for the test set.
+%% rest for the test set.
 rng(0);
 shuffledIndices = randperm(size(imds.Files,1));
-idx = floor(0.6 * length(shuffledIndices));
+idx = floor(1 * length(shuffledIndices));
 
 % Split the image datastore into training and test set.
 imdsTrain = subset(imds,shuffledIndices(1:idx));
@@ -48,9 +68,10 @@ bdsTest = subset(bds,shuffledIndices(idx+1:end));
 % Combine the image and box label datastore.
 trainingData = combine(imdsTrain,bdsTrain);
 testData = combine(imdsTest,bdsTest);
+% 
+% helper.validateInputData(trainingData);
+% helper.validateInputData(testData);
 
-helper.validateInputData(trainingData);
-helper.validateInputData(testData);
 
 %% Preprocess Training Data
 % Specify the network input size. 
@@ -75,7 +96,7 @@ labels = data{1,3};
 figure
 imshow(I)
 showShape('rectangle',bbox(labels=='Car',:),...
-          'Color','green','LineWidth',0.5);hold on;
+          'Color','white','LineWidth',0.5);hold on;
 showShape('rectangle',bbox(labels=='Truck',:),...
           'Color','magenta','LineWidth',0.5);
 showShape('rectangle',bbox(labels=='Pedestrain',:),...
@@ -83,6 +104,7 @@ showShape('rectangle',bbox(labels=='Pedestrain',:),...
 
 % Reset the datastore.
 reset(preprocessedTrainingData);
+
 
 %% Modify Pretrained Complex YOLO v4 Network
 % The Complex YOLO v4 network uses anchor boxes estimated using training
@@ -105,7 +127,7 @@ reset(preprocessedTrainingData);
 % arrange them in correct order to be used in the training.
 rng(0)
 trainingDataForEstimation = transform(trainingData, @(data)helper.preprocessData(data, networkInputSize, 0));
-numAnchors = 6;
+numAnchors = 9;
 [anchorBoxes, meanIoU] = estimateAnchorBoxes(trainingDataForEstimation, numAnchors);
 
 % Specify the classNames to be used for training.
@@ -134,13 +156,23 @@ anchors.anchorBoxMasks = anchorBoxMasks;
 % * Initialize the velocity of gradient as []. This is used by SGDM to store 
 % the velocity of gradients.
 numEpochs = 90;
-miniBatchSize = 8;
+miniBatchSize = 10;
 learningRate = 0.001;
 warmupPeriod = 1000;
 l2Regularization = 0.001;
 penaltyThreshold = 0.5;
 velocity = [];
 
+
+%%
+% Initialize variable to track the best training loss
+bestTrainingLoss = inf;
+modelFileName = 'bestTrainedModelBasedOnTrainingLoss.mat';
+
+modelsDir = 'models';
+if ~exist(modelsDir, 'dir')
+    mkdir(modelsDir);
+end
 %% Train Model
 % Train on a GPU, if one is available. Using a GPU requires Parallel
 % Computing Toolbox™ and a CUDA® enabled NVIDIA® GPU.
@@ -208,7 +240,8 @@ fig = figure;
 iteration = 0;
 % Custom training loop.
 for epoch = 1:numEpochs
-      
+    % Initialize the cumulative loss for the current epoch
+    epochLoss = 0;  % <-- Add this line to initialize epochLoss
     reset(mbqTrain);
     shuffle(mbqTrain);
     
@@ -240,6 +273,56 @@ for epoch = 1:numEpochs
             
         % Update training plot with new points.
         helper.updatePlots(lossPlotter, learningRatePlotter, iteration, currentLR, lossInfo.totalLoss);
+        % Accumulate epoch loss
+        epochLoss = lossInfo.totalLoss;  % <-- Add or modify this line
+    end
+    % Record the loss for this epoch
+    epochLosses(epoch) = epochLoss;  % <-- Add this line to store the loss for each epoch
+    
+    % Save the model for this epoch in the models directory
+    modelFileName = fullfile(modelsDir, sprintf('trainedModel_epoch_%d.mat', epoch));
+    
+    % Save the model and confirm it is saved
+    try
+        save(modelFileName, 'net');  % Save the model
+        modelFileNames{epoch} = modelFileName;  % Track the filename
+        fprintf('Epoch %d: Model saved with training loss %.4f\n', epoch, epochLoss);
+    catch ME
+        warning('Failed to save model for epoch %d: %s', epoch, ME.message);
+        modelFileNames{epoch} = '';  % Leave as empty if save failed
+    end
+
+    % Debugging statement: Print the current state of modelFileNames
+    disp(['Model filenames after epoch ', num2str(epoch), ':']);
+    % disp(modelFileNames);
+    
+end
+%%
+
+% Find the model with the least training loss
+[~, bestEpoch] = min(epochLosses);
+bestEpoch = gather(extractdata(bestEpoch));  % Convert gpuArray or dlarray to numeric value
+
+% Get the best model filename
+bestModelFileName = modelFileNames{bestEpoch};
+
+% Ensure the best model filename is valid
+if isempty(bestModelFileName) || ~isfile(bestModelFileName)
+    error('Best model filename is empty or does not exist. Please check the file paths.');
+end
+
+% Define final model name for the best model
+bestModelFinalName = 'bestTrainedModelBasedOnTrainingLoss.mat';
+
+% Copy the best model to a dedicated file
+copyfile(bestModelFileName, bestModelFinalName);
+fprintf('Best model saved from Epoch %d with training loss %.4f\n', bestEpoch, epochLosses(bestEpoch));
+
+% Cleanup: Delete all models except the best one
+for epoch = 1:numEpochs
+    if epoch ~= bestEpoch && ~isempty(modelFileNames{epoch})
+        delete(modelFileNames{epoch});
+        fprintf('Deleted model from Epoch %d\n', epoch);
     end
 end
 
@@ -282,7 +365,7 @@ while hasdata(testData)
     image = data{1,1};
     
     % Run the detector.
-    executionEnvironment = 'auto';
+    executionEnvironment = 'gpu';
     [bboxes, scores, labels] = detectComplexYOLOv4(net, image, anchors, classNames, executionEnvironment);
     
     % Collect the results.
@@ -310,7 +393,7 @@ data = read(testData);
 I = data{1,1};
 
 % Run the detector.
-executionEnvironment = 'auto';
+executionEnvironment = 'gpu';
 [bboxes, scores, labels] = detectComplexYOLOv4(net, I, anchors, classNames, executionEnvironment);
 
 figure
